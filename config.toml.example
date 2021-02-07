@@ -1,0 +1,4 @@
+output = "/usr/local/var/www/xxxx"
+script = "build:dev"
+dist = "./dist"
+token = "xxxxxxxxxxxxxx"
