@@ -1,12 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/kataras/golog"
-
 	"github.com/kataras/iris/v12"
 	"github.com/kataras/iris/v12/httptest"
+	"strings"
 )
 
 var Token *string
@@ -38,9 +39,15 @@ type Hook struct {
 	Authentication string `header:"X-Gitlab-Token,required"`
 }
 
+type RequestBody struct {
+	Ref string `json:"ref"`
+}
+
 // Webhook 接收 gitlab 的 webhook 请求.
 func Webhook(ctx iris.Context) {
 	var hook Hook
+
+	var reqBodyMap RequestBody
 
 	logger := ctx.Application().Logger()
 
@@ -52,17 +59,38 @@ func Webhook(ctx iris.Context) {
 		return
 	}
 
+	reqBody, err := ctx.GetBody()
+	if err != nil {
+		logger.Error(err)
+
+		return
+	}
+
+	err = json.Unmarshal(reqBody, &reqBodyMap)
+	if err != nil {
+		logger.Error(err)
+
+		return
+	}
+
+	path, script, dist, branch := GetEnv()
+
 	if hook.Authentication == *Token {
 		_, _ = ctx.Writef("auth success\n")
 
 		logger.Info("auth success")
 		logger.Info("new process pending...")
 
+		refArr := strings.Split(reqBodyMap.Ref,"/")
+		if refArr[2] != branch {
+			logger.Info("branch checked failed, stop deploy...")
+
+			return
+		}
+
 		select {
 		case Queue <- 1:
 			logger.Info("enter into process")
-
-			path, script, dist := GetEnv()
 
 			go RunDeployProcess(logger, path, script, dist)
 		default:
