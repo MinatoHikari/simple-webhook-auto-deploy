@@ -7,7 +7,6 @@ import (
 	"github.com/kataras/golog"
 	"github.com/kataras/iris/v12"
 	"github.com/kataras/iris/v12/httptest"
-	"strings"
 )
 
 var Token *string
@@ -27,6 +26,8 @@ func main() {
 
 	app := iris.New()
 	app.Post("/webhook", Webhook)
+
+	InitLog(app)
 
 	err := app.Listen(":8079")
 	if err != nil {
@@ -73,7 +74,7 @@ func Webhook(ctx iris.Context) {
 		return
 	}
 
-	path, script, dist, branch := GetEnv()
+	path, script, dist, branch, _ := GetEnv()
 
 	if hook.Authentication == *Token {
 		_, _ = ctx.Writef("auth success\n")
@@ -81,11 +82,11 @@ func Webhook(ctx iris.Context) {
 		logger.Info("auth success")
 		logger.Info("new process pending...")
 
-		refArr := strings.Split(reqBodyMap.Ref,"/")
-		if refArr[2] != branch {
-			logger.Info("branch checked failed, stop deploy...")
-
-			return
+		if branch != "" {
+			res := CheckBranch(branch, reqBodyMap, logger)
+			if !res {
+				return
+			}
 		}
 
 		select {

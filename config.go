@@ -38,11 +38,12 @@ func InitConfig() (notFound bool) {
 }
 
 // GetEnv 获取输出目录 要运行的npm命令 项目的dist编译目录.
-func GetEnv() (path string, script string, dist string, branch string) {
+func GetEnv() (path string, script string, dist string, branch string, logPath string) {
 	path = Config.GetString("output")
 	script = Config.GetString("script")
 	dist = Config.GetString("dist")
 	branch = Config.GetString("branch")
+	logPath = Config.GetString("logPath")
 
 	return
 }
