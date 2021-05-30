@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/spf13/viper"
+	"strings"
 )
 
 // Config 配置.
@@ -53,4 +54,15 @@ func GetToken() *string {
 	token := Config.GetString("token")
 
 	return &token
+}
+
+func GetPort() string {
+	port := Config.GetString("port")
+	if port != "" {
+		port = strings.Join([]string{":", port}, "")
+	} else {
+		port = ":8079"
+	}
+
+	return port
 }

@@ -29,7 +29,7 @@ func main() {
 
 	InitLog(app)
 
-	err := app.Listen(":8079")
+	err := app.Listen(GetPort())
 	if err != nil {
 		fmt.Println("service start failed:", err)
 	}
