@@ -34,7 +34,7 @@ Loop:
 	for scanner.Scan() {
 		m := scanner.Text()
 		fmt.Println(m)
-		if strings.Contains(m, "DONE") {
+		if strings.Contains(m, "exit status") {
 			if err := c.Process.Release(); err != nil {
 				panic(err)
 			}
@@ -80,7 +80,7 @@ func RunBuild(logger *golog.Logger, script string) error {
 
 	str = script
 	if script == "" {
-		str = "build:dev"
+		str = "build"
 	}
 
 	npmRunBuild := exec.Command("npm", "run", str)

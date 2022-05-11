@@ -121,6 +121,8 @@ func RunDeployProcess(logger *golog.Logger, path string, script string, dist str
 
 		<-Queue
 
+		Checkqueue(logger, path, script, dist)
+
 		return
 	}
 
@@ -130,6 +132,8 @@ func RunDeployProcess(logger *golog.Logger, path string, script string, dist str
 		logger.Error("git pull failed:", err)
 
 		<-Queue
+
+		Checkqueue(logger, path, script, dist)
 
 		return
 	}
@@ -141,6 +145,8 @@ func RunDeployProcess(logger *golog.Logger, path string, script string, dist str
 
 		<-Queue
 
+		Checkqueue(logger, path, script, dist)
+
 		return
 	}
 
@@ -151,6 +157,8 @@ func RunDeployProcess(logger *golog.Logger, path string, script string, dist str
 
 		<-Queue
 
+		Checkqueue(logger, path, script, dist)
+
 		return
 	}
 
@@ -158,6 +166,11 @@ func RunDeployProcess(logger *golog.Logger, path string, script string, dist str
 
 	<-Queue
 
+	Checkqueue(logger, path, script, dist)
+}
+
+// Checkqueue check if there are other processes exist
+func Checkqueue(logger *golog.Logger, path string, script string, dist string) {
 	if len(Processes) != 0 {
 		Queue <- 1
 

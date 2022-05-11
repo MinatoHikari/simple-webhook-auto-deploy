@@ -56,6 +56,7 @@ func GetToken() *string {
 	return &token
 }
 
+// GetPort 获取服务运行的端口
 func GetPort() string {
 	port := Config.GetString("port")
 	if port != "" {
