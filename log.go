@@ -7,13 +7,13 @@ import (
 
 // InitLog 初始化日志
 func InitLog(app *iris.Application) {
-	_, _, _, _, logPath := GetEnv()
+	env := GetEnv()
 
-	if logPath == "" {
-		logPath = "webhook.log"
+	if env.LogPath == "" {
+		env.LogPath = "webhook.log"
 	}
 
-	file, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	file, _ := os.OpenFile(env.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	logger := app.Logger().AddOutput(file)
-	logger.Info("log output:", logPath)
+	logger.Info("log output:", env.LogPath)
 }

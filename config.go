@@ -7,6 +7,17 @@ import (
 	"strings"
 )
 
+type ConfigEnv struct {
+	Path                 string
+	Script               string
+	Dist                 string
+	Branch               string
+	LogPath              string
+	PackageManager       string
+	AdditionalScript     string
+	AdditionalScriptArgs []string
+}
+
 // Config 配置.
 var Config *viper.Viper
 
@@ -14,9 +25,9 @@ var Config *viper.Viper
 func InitConfig() (notFound bool) {
 	Config = viper.New()
 	Config.SetConfigFile("./config.toml")
-	Config.SetConfigName("config")
-	Config.SetConfigType("toml")
-	Config.AddConfigPath(".")
+	//Config.SetConfigName("config")
+	//Config.SetConfigType("toml")
+	//Config.AddConfigPath(".")
 
 	err := Config.ReadInConfig() // 查找并读取配置文件
 	if err == nil {
@@ -39,14 +50,18 @@ func InitConfig() (notFound bool) {
 }
 
 // GetEnv 获取输出目录 要运行的npm命令 项目的dist编译目录.
-func GetEnv() (path string, script string, dist string, branch string, logPath string) {
-	path = Config.GetString("output")
-	script = Config.GetString("script")
-	dist = Config.GetString("dist")
-	branch = Config.GetString("branch")
-	logPath = Config.GetString("logPath")
+func GetEnv() *ConfigEnv {
+	configEnv := new(ConfigEnv)
+	configEnv.Path = Config.GetString("output")
+	configEnv.Script = Config.GetString("script")
+	configEnv.Dist = Config.GetString("dist")
+	configEnv.Branch = Config.GetString("branch")
+	configEnv.LogPath = Config.GetString("logPath")
+	configEnv.PackageManager = Config.GetString("package-manager")
+	configEnv.AdditionalScript = Config.GetString("additional-script")
+	configEnv.AdditionalScriptArgs = Config.GetStringSlice("additional-script-args")
 
-	return
+	return configEnv
 }
 
 // GetToken 获取token.

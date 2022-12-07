@@ -2,7 +2,8 @@ package main
 
 import (
 	"bufio"
-	"fmt"
+	"errors"
+	"io"
 	"os/exec"
 	"strings"
 
@@ -17,41 +18,48 @@ func RunCmd(c *exec.Cmd, cType string, logger *golog.Logger) error {
 	if err != nil {
 		return err
 	}
-
-	//defer func() {
-	//	if err := stdout.Close(); err != nil {
-	//		logger.Error("close cmd failed:", err)
-	//	}
-	//}()
+	stdErrOut, err := c.StderrPipe()
+	if err != nil {
+		return err
+	}
 
 	if err := c.Start(); err != nil {
 		return err
 	}
 
+	released = doScan(c, stdout, logger, false)
+	released = doScan(c, stdErrOut, logger, true)
+
+	if !released {
+		if err := c.Wait(); err != nil {
+			logger.Error("command wait error:", err)
+			return err
+		}
+	} else {
+		return errors.New("command error")
+	}
+
+	return nil
+}
+
+func doScan(c *exec.Cmd, stdout io.ReadCloser, logger *golog.Logger, isError bool) bool {
+	released := false
 	scanner := bufio.NewScanner(stdout)
 	scanner.Split(bufio.ScanLines)
 Loop:
 	for scanner.Scan() {
 		m := scanner.Text()
-		fmt.Println(m)
-		if strings.Contains(m, "exit status") {
+		logger.Info(m)
+		if strings.Contains(m, "exit code") {
 			if err := c.Process.Release(); err != nil {
 				panic(err)
 			}
 			released = true
 			logger.Info("process released")
-
 			break Loop
 		}
 	}
-
-	if !released {
-		if err := c.Wait(); err != nil {
-			return fmt.Errorf("command wait error:%w", err)
-		}
-	}
-
-	return nil
+	return released
 }
 
 // GitClean run cmd git clean.
@@ -75,7 +83,7 @@ func GitPull(logger *golog.Logger) error {
 }
 
 // RunBuild run cmd npm run build.
-func RunBuild(logger *golog.Logger, script string) error {
+func RunBuild(logger *golog.Logger, script string, manager string) error {
 	var str string
 
 	str = script
@@ -83,7 +91,20 @@ func RunBuild(logger *golog.Logger, script string) error {
 		str = "build"
 	}
 
-	npmRunBuild := exec.Command("npm", "run", str)
+	if manager == "" {
+		manager = "npm"
+	}
+	npmRunBuild := exec.Command(manager, "run", str)
+	if err := RunCmd(npmRunBuild, "build", logger); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// RunAdditionScript run another script before deploy.
+func RunAdditionScript(logger *golog.Logger, env *ConfigEnv) error {
+	npmRunBuild := exec.Command(env.AdditionalScript, env.AdditionalScriptArgs...)
 	if err := RunCmd(npmRunBuild, "build", logger); err != nil {
 		return err
 	}
@@ -97,6 +118,11 @@ func ClearTargetFolderThenMove(logger *golog.Logger, path string, dist string) e
 
 	distStr = dist
 
+	if path == "" {
+		logger.Info("there is no target path, stop moving files")
+		return nil
+	}
+
 	if dist == "" {
 		distStr = "./dist"
 	}
@@ -109,6 +135,8 @@ func ClearTargetFolderThenMove(logger *golog.Logger, path string, dist string) e
 	move := exec.Command("mv", distStr, path)
 	if err := RunCmd(move, "run", logger); err != nil {
 		return err
+	} else {
+		logger.Info("successfully deployed")
 	}
 
 	return nil

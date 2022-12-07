@@ -37,7 +37,8 @@ func main() {
 
 // Hook gitlab webhook.
 type Hook struct {
-	Authentication string `header:"X-Gitlab-Token,required"`
+	GitlabToken     string `header:"X-Gitlab-Token"`
+	GithubSignature string `header:"X-Hub-Signature-256"`
 }
 
 type RequestBody struct {
@@ -74,16 +75,16 @@ func Webhook(ctx iris.Context) {
 		return
 	}
 
-	path, script, dist, branch, _ := GetEnv()
+	env := GetEnv()
 
-	if hook.Authentication == *Token {
+	if Verify(hook, *Token, reqBody) {
 		_, _ = ctx.Writef("auth success\n")
 
 		logger.Info("auth success")
 		logger.Info("new process pending...")
 
-		if branch != "" {
-			res := CheckBranch(branch, reqBodyMap, logger)
+		if env.Branch != "" {
+			res := CheckBranch(env.Branch, reqBodyMap, logger)
 			if !res {
 				return
 			}
@@ -93,7 +94,7 @@ func Webhook(ctx iris.Context) {
 		case Queue <- 1:
 			logger.Info("enter into process")
 
-			go RunDeployProcess(logger, path, script, dist)
+			go RunDeployProcess(logger, env)
 		default:
 			Processes = append(Processes, 1)
 		}
@@ -107,7 +108,7 @@ func Webhook(ctx iris.Context) {
 }
 
 // RunDeployProcess 运行部署进程，进程队列.
-func RunDeployProcess(logger *golog.Logger, path string, script string, dist string) {
+func RunDeployProcess(logger *golog.Logger, env *ConfigEnv) {
 	defer func() {
 		if err := recover(); err != nil {
 			fmt.Println("recover error:", err)
@@ -121,7 +122,7 @@ func RunDeployProcess(logger *golog.Logger, path string, script string, dist str
 
 		<-Queue
 
-		Checkqueue(logger, path, script, dist)
+		Checkqueue(logger, env)
 
 		return
 	}
@@ -133,50 +134,60 @@ func RunDeployProcess(logger *golog.Logger, path string, script string, dist str
 
 		<-Queue
 
-		Checkqueue(logger, path, script, dist)
+		Checkqueue(logger, env)
 
 		return
 	}
 
 	logger.Info("start build...")
 
-	if err := RunBuild(logger, script); err != nil {
+	if err := RunBuild(logger, env.Script, env.PackageManager); err != nil {
 		logger.Error("build failed:", err)
 
 		<-Queue
 
-		Checkqueue(logger, path, script, dist)
+		Checkqueue(logger, env)
+
+		return
+	}
+
+	if err := RunAdditionScript(logger, env); err != nil {
+		logger.Error("run additional script failed:", err)
+
+		<-Queue
+
+		Checkqueue(logger, env)
 
 		return
 	}
 
 	logger.Info("start deploy...")
 
-	if err := ClearTargetFolderThenMove(logger, path, dist); err != nil {
+	if err := ClearTargetFolderThenMove(logger, env.Path, env.Dist); err != nil && env.Path != "" && env.Dist != "" {
 		logger.Error("clear failed:", err)
 
 		<-Queue
 
-		Checkqueue(logger, path, script, dist)
+		Checkqueue(logger, env)
 
 		return
 	}
 
-	logger.Info("successfully deployed")
+	logger.Info("process end")
 
 	<-Queue
 
-	Checkqueue(logger, path, script, dist)
+	Checkqueue(logger, env)
 }
 
 // Checkqueue check if there are other processes exist
-func Checkqueue(logger *golog.Logger, path string, script string, dist string) {
+func Checkqueue(logger *golog.Logger, env *ConfigEnv) {
 	if len(Processes) != 0 {
 		Queue <- 1
 
 		logger.Info("start another deploy process...")
 
-		go RunDeployProcess(logger, path, script, dist)
+		go RunDeployProcess(logger, env)
 
 		Processes = Processes[1:]
 	}

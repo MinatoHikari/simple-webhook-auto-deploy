@@ -1,6 +1,10 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"github.com/kataras/golog"
 	"strings"
 )
@@ -15,4 +19,25 @@ func CheckBranch(branch string, reqBodyMap RequestBody, logger *golog.Logger) bo
 	}
 
 	return true
+}
+
+// Verify 验证请求权限
+func Verify(hook Hook, token string, reqBody []byte) bool {
+	if hook.GitlabToken != "" {
+		return hook.GitlabToken == token
+	}
+	if hook.GithubSignature != "" {
+		signToken := hmac.New(sha256.New, []byte(token))
+		signToken.Write(reqBody)
+		hexstr := hex.EncodeToString(signToken.Sum(nil))
+		signature := strings.Split(hook.GithubSignature, "sha256=")[1]
+		signatureByte, err := hex.DecodeString(signature)
+		if err != nil {
+			fmt.Println(err)
+		}
+		fmt.Println(hexstr)
+		fmt.Println(signature)
+		return hmac.Equal(signToken.Sum(nil), signatureByte)
+	}
+	return false
 }
