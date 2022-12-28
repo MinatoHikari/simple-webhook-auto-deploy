@@ -1,6 +1,6 @@
 output = "/usr/local/var/www/xxxx"
 script = "build:dev"
-package-manager" = "pnpm"
+package-manager = "pnpm"
 dist = "./dist"
 token = "xxxxxxxxxxxxxx"
 branch = "main"
