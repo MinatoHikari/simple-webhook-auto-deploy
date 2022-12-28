@@ -9,4 +9,5 @@ require (
 	github.com/kataras/iris/v12 v12.2.0-alpha.0.20201106094235-3d5ed9926e14
 	github.com/spf13/viper v1.7.1
 	github.com/yudai/pp v2.0.1+incompatible // indirect
+	golang.org/x/sys v0.3.0 // indirect
 )

@@ -1,7 +1,10 @@
 output = "/usr/local/var/www/xxxx"
 script = "build:dev"
+package-manager" = "pnpm"
 dist = "./dist"
 token = "xxxxxxxxxxxxxx"
 branch = "main"
 logPath = "/usr/local/var/webhook.log"
 port = "8079"
+additional-script = "/usr/bin/xxx"
+additional-script-args = ["restart","process.json"]
