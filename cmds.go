@@ -69,6 +69,11 @@ func GitClean(logger *golog.Logger) error {
 		return err
 	}
 
+	gitResetCmd := exec.Command("git", "reset", "--hard")
+	if err := RunCmd(gitResetCmd, "reset", logger); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -104,8 +109,8 @@ func RunBuild(logger *golog.Logger, script string, manager string) error {
 
 // RunAdditionScript run another script before deploy.
 func RunAdditionScript(logger *golog.Logger, env *ConfigEnv) error {
-	npmRunBuild := exec.Command(env.AdditionalScript, env.AdditionalScriptArgs...)
-	if err := RunCmd(npmRunBuild, "build", logger); err != nil {
+	extraCmd := exec.Command(env.AdditionalScript, env.AdditionalScriptArgs...)
+	if err := RunCmd(extraCmd, "build", logger); err != nil {
 		return err
 	}
 

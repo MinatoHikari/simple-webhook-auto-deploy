@@ -11,6 +11,10 @@ import (
 
 // CheckBranch 分支过滤
 func CheckBranch(branch string, reqBodyMap RequestBody, logger *golog.Logger) bool {
+	if &reqBodyMap.Branch != nil {
+		return reqBodyMap.Branch == branch
+	}
+
 	refArr := strings.Split(reqBodyMap.Ref, "/")
 	if refArr[2] != branch {
 		logger.Info("branch checked failed, stop deploy...")

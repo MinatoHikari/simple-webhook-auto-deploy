@@ -42,7 +42,8 @@ type Hook struct {
 }
 
 type RequestBody struct {
-	Ref string `json:"ref"`
+	Ref    string `json:"ref"`
+	Branch string `json:"branch"`
 }
 
 // Webhook 接收 gitlab 的 webhook 请求.
@@ -141,18 +142,20 @@ func RunDeployProcess(logger *golog.Logger, env *ConfigEnv) {
 
 	logger.Info("start build...")
 
-	if err := RunBuild(logger, env.Script, env.PackageManager); err != nil {
-		logger.Error("build failed:", err)
+	if env.AdditionalScript != "" {
+		if err := RunAdditionScript(logger, env); err != nil {
+			logger.Error("run additional script failed:", err)
 
-		<-Queue
+			<-Queue
 
-		Checkqueue(logger, env)
+			Checkqueue(logger, env)
 
-		return
+			return
+		}
 	}
 
-	if err := RunAdditionScript(logger, env); err != nil {
-		logger.Error("run additional script failed:", err)
+	if err := RunBuild(logger, env.Script, env.PackageManager); err != nil {
+		logger.Error("build failed:", err)
 
 		<-Queue
 
