@@ -79,7 +79,7 @@ func Webhook(ctx iris.Context) {
 	env := GetEnv()
 
 	if Verify(hook, *Token, reqBody) {
-		_, _ = ctx.Writef("auth success\n")
+		_, _ = ctx.Writef("Auth success, a new script has been pushed into task list.")
 
 		logger.Info("auth success")
 		logger.Info("new process pending...")

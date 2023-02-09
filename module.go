@@ -11,7 +11,7 @@ import (
 
 // CheckBranch 分支过滤
 func CheckBranch(branch string, reqBodyMap RequestBody, logger *golog.Logger) bool {
-	if &reqBodyMap.Branch != nil {
+	if reqBodyMap.Branch != "" {
 		return reqBodyMap.Branch == branch
 	}
 
