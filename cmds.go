@@ -6,14 +6,13 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/kataras/golog"
 )
 
 // RunCmd cmd 进程通用方法
 func RunCmd(c *exec.Cmd, cType string, logger *golog.Logger) error {
-	released := false
-
 	stdout, err := c.StdoutPipe()
 	if err != nil {
 		return err
@@ -27,16 +26,54 @@ func RunCmd(c *exec.Cmd, cType string, logger *golog.Logger) error {
 		return err
 	}
 
-	released = doScan(c, stdout, logger, false)
-	released = doScan(c, stdErrOut, logger, true)
+	var wg sync.WaitGroup
+	releasedCh := make(chan bool, 1)
 
-	if !released {
-		if err := c.Wait(); err != nil {
-			logger.Error("command wait error:", err)
-			return err
+	// 并发读取 stdout
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if r := doScan(c, stdout, logger, false); r {
+			select {
+			case releasedCh <- true:
+			default:
+			}
 		}
-	} else {
+	}()
+
+	// 并发读取 stderr
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if r := doScan(c, stdErrOut, logger, true); r {
+			select {
+			case releasedCh <- true:
+			default:
+			}
+		}
+	}()
+
+	// 等待命令完成
+	cmdDone := make(chan error, 1)
+	go func() {
+		cmdDone <- c.Wait()
+	}()
+
+	// 检查是否有进程被释放或命令完成
+	select {
+	case <-releasedCh:
+		// 进程被释放，等待所有输出读取完成后再返回
+		wg.Wait()
 		return errors.New("command error")
+	case err := <-cmdDone:
+		// 命令完成，等待所有输出读取完成
+		// 确保所有 stdout 和 stderr 的数据都被读取完毕
+		wg.Wait()
+		
+		if err != nil {
+			logger.Error("command wait error:", err)
+			//return err
+		}
 	}
 
 	return nil
@@ -47,9 +84,19 @@ func doScan(c *exec.Cmd, stdout io.ReadCloser, logger *golog.Logger, isError boo
 	scanner := bufio.NewScanner(stdout)
 	scanner.Split(bufio.ScanLines)
 Loop:
-	for scanner.Scan() {
+	for {
+		// 使用 Scan() 读取，如果返回 false 且没有错误，说明读取完毕
+		if !scanner.Scan() {
+			break Loop
+		}
+		
 		m := scanner.Text()
-		logger.Info(m)
+		// 根据 isError 参数区分日志级别
+		if isError {
+			logger.Error(m)
+		} else {
+			logger.Info(m)
+		}
 		if strings.Contains(m, "exit code") {
 			if err := c.Process.Release(); err != nil {
 				panic(err)
@@ -59,6 +106,24 @@ Loop:
 			break Loop
 		}
 	}
+	
+	// 处理扫描错误
+	if err := scanner.Err(); err != nil {
+		// EOF 和文件关闭错误是正常的，表示读取完毕
+		errStr := err.Error()
+		if err == io.EOF ||
+		   strings.Contains(errStr, "file already closed") || 
+		   strings.Contains(errStr, "read |0: file already closed") ||
+		   strings.Contains(errStr, "broken pipe") ||
+		   strings.Contains(errStr, "use of closed file") {
+			// 这些是正常的文件关闭情况，不需要记录
+			return released
+		}
+		// 其他错误才记录
+		logger.Error("scanner error:", err)
+	}
+	
+	
 	return released
 }
 
