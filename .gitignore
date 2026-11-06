@@ -73,3 +73,19 @@ fabric.properties
 .idea/caches/build_file_checksums.ser
 
 /.idea/
+
+# 构建产物与运行时数据
+webhook-service
+webhook-service-linux
+logs/
+config.toml
+
+# 前端
+frontend/node_modules/
+
+# 系统文件
+.DS_Store
+
+# 工具产物
+.video_agent/
+.zcode/
