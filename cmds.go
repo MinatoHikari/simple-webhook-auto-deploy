@@ -7,12 +7,11 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-
-	"github.com/kataras/golog"
 )
 
-// RunCmd cmd 进程通用方法
-func RunCmd(c *exec.Cmd, cType string, logger *golog.Logger) error {
+// RunCmd 执行命令,实时把 stdout/stderr 写入日志 sink。
+// 命令以非零退出码结束时返回错误,调用方必须中断后续部署步骤。
+func RunCmd(c *exec.Cmd, sink *LogSink, stage, deployment string) error {
 	stdout, err := c.StdoutPipe()
 	if err != nil {
 		return err
@@ -33,7 +32,7 @@ func RunCmd(c *exec.Cmd, cType string, logger *golog.Logger) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if r := doScan(c, stdout, logger, false); r {
+		if r := doScan(c, stdout, sink, stage, deployment, false); r {
 			select {
 			case releasedCh <- true:
 			default:
@@ -45,7 +44,7 @@ func RunCmd(c *exec.Cmd, cType string, logger *golog.Logger) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if r := doScan(c, stdErrOut, logger, true); r {
+		if r := doScan(c, stdErrOut, sink, stage, deployment, true); r {
 			select {
 			case releasedCh <- true:
 			default:
@@ -59,155 +58,163 @@ func RunCmd(c *exec.Cmd, cType string, logger *golog.Logger) error {
 		cmdDone <- c.Wait()
 	}()
 
-	// 检查是否有进程被释放或命令完成
 	select {
 	case <-releasedCh:
-		// 进程被释放，等待所有输出读取完成后再返回
+		// 输出中检测到 "exit code",进程已被释放,等待输出读完后返回错误
 		wg.Wait()
 		return errors.New("command error")
 	case err := <-cmdDone:
-		// 命令完成，等待所有输出读取完成
-		// 确保所有 stdout 和 stderr 的数据都被读取完毕
+		// 命令结束,等全部输出读完后向上传递结果
 		wg.Wait()
-		
 		if err != nil {
-			logger.Error("command wait error:", err)
-			//return err
+			sink.Log("error", stage, deployment, "命令退出异常: "+err.Error())
+			return err
 		}
 	}
 
 	return nil
 }
 
-func doScan(c *exec.Cmd, stdout io.ReadCloser, logger *golog.Logger, isError bool) bool {
+// doScan 逐行读取命令输出并写入日志 sink,stderr 记为 error 级别。
+func doScan(c *exec.Cmd, stdout io.ReadCloser, sink *LogSink, stage, deployment string, isError bool) bool {
 	released := false
 	scanner := bufio.NewScanner(stdout)
 	scanner.Split(bufio.ScanLines)
+	// 构建工具可能输出超长单行(如 sourcemap),调大缓冲上限
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 Loop:
 	for {
-		// 使用 Scan() 读取，如果返回 false 且没有错误，说明读取完毕
 		if !scanner.Scan() {
 			break Loop
 		}
-		
+
 		m := scanner.Text()
-		// 根据 isError 参数区分日志级别
-		if isError {
-			logger.Error(m)
-		} else {
-			logger.Info(m)
+		if m == "" {
+			continue
 		}
+		if isError {
+			sink.Log("error", stage, deployment, m)
+		} else {
+			sink.Log("info", stage, deployment, m)
+		}
+		// 某些命令卡死时会持续输出 "exit code" 而不退出,此时强制释放进程
 		if strings.Contains(m, "exit code") {
 			if err := c.Process.Release(); err != nil {
 				panic(err)
 			}
 			released = true
-			logger.Info("process released")
+			sink.Log("info", stage, deployment, "process released")
 			break Loop
 		}
 	}
-	
-	// 处理扫描错误
+
 	if err := scanner.Err(); err != nil {
-		// EOF 和文件关闭错误是正常的，表示读取完毕
 		errStr := err.Error()
 		if err == io.EOF ||
-		   strings.Contains(errStr, "file already closed") || 
-		   strings.Contains(errStr, "read |0: file already closed") ||
-		   strings.Contains(errStr, "broken pipe") ||
-		   strings.Contains(errStr, "use of closed file") {
-			// 这些是正常的文件关闭情况，不需要记录
+			strings.Contains(errStr, "file already closed") ||
+			strings.Contains(errStr, "read |0: file already closed") ||
+			strings.Contains(errStr, "broken pipe") ||
+			strings.Contains(errStr, "use of closed file") {
+			// 进程被释放后的正常读错误,忽略
 			return released
 		}
-		// 其他错误才记录
-		logger.Error("scanner error:", err)
+		sink.Log("error", stage, deployment, "读取命令输出失败: "+errStr)
 	}
-	
-	
+
 	return released
 }
 
-// GitClean run cmd git clean.
-func GitClean(logger *golog.Logger) error {
-	gitPullCmd := exec.Command("git", "clean", "-f")
-	if err := RunCmd(gitPullCmd, "clean", logger); err != nil {
+// GitClean 清理工作区:git clean -f + git reset --hard。
+func GitClean(dir string, sink *LogSink, deployment string) error {
+	gitCleanCmd := exec.Command("git", "clean", "-f")
+	gitCleanCmd.Dir = dir
+	if err := RunCmd(gitCleanCmd, sink, "clean", deployment); err != nil {
 		return err
 	}
 
 	gitResetCmd := exec.Command("git", "reset", "--hard")
-	if err := RunCmd(gitResetCmd, "reset", logger); err != nil {
+	gitResetCmd.Dir = dir
+	if err := RunCmd(gitResetCmd, sink, "clean", deployment); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// GitPull run cmd git pull.
-func GitPull(logger *golog.Logger) error {
+// GitPull 拉取最新代码。
+func GitPull(dir string, sink *LogSink, deployment string) error {
 	gitPullCmd := exec.Command("git", "pull")
-	if err := RunCmd(gitPullCmd, "pull", logger); err != nil {
+	gitPullCmd.Dir = dir
+	if err := RunCmd(gitPullCmd, sink, "pull", deployment); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// RunBuild run cmd npm run build.
-func RunBuild(logger *golog.Logger, script string, manager string) error {
-	var str string
-
-	str = script
-	if script == "" {
-		str = "build"
+// GitCheckout 切换分支。
+func GitCheckout(dir, branch string, sink *LogSink, deployment string) error {
+	gitCheckoutCmd := exec.Command("git", "checkout", branch)
+	gitCheckoutCmd.Dir = dir
+	if err := RunCmd(gitCheckoutCmd, sink, "checkout", deployment); err != nil {
+		return err
 	}
 
+	return nil
+}
+
+// RunBuild 执行包管理器构建命令,默认 npm run build。
+func RunBuild(dir, script, manager string, sink *LogSink, deployment string) error {
+	if script == "" {
+		script = "build"
+	}
 	if manager == "" {
 		manager = "npm"
 	}
-	npmRunBuild := exec.Command(manager, "run", str)
-	if err := RunCmd(npmRunBuild, "build", logger); err != nil {
+	buildCmd := exec.Command(manager, "run", script)
+	buildCmd.Dir = dir
+	if err := RunCmd(buildCmd, sink, "build", deployment); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// RunAdditionScript run another script before deploy.
-func RunAdditionScript(logger *golog.Logger, env *ConfigEnv) error {
-	extraCmd := exec.Command(env.AdditionalScript, env.AdditionalScriptArgs...)
-	if err := RunCmd(extraCmd, "build", logger); err != nil {
+// RunAdditionScript 构建前执行附加脚本。
+func RunAdditionScript(dir, script string, args []string, sink *LogSink, deployment string) error {
+	extraCmd := exec.Command(script, args...)
+	extraCmd.Dir = dir
+	if err := RunCmd(extraCmd, sink, "script", deployment); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// ClearTargetFolderThenMove 删除要部署的目录，移动 dist 目录至目标目录
-func ClearTargetFolderThenMove(logger *golog.Logger, path string, dist string) error {
-	var distStr string
-
-	distStr = dist
-
+// ClearTargetFolderThenMove 删除目标目录,把构建产物移动过去。
+// output 为空时跳过(只构建不发布)。
+func ClearTargetFolderThenMove(dir, path, dist string, sink *LogSink, deployment string) error {
 	if path == "" {
-		logger.Info("there is no target path, stop moving files")
+		sink.Log("info", "deploy", deployment, "未配置 output,跳过产物发布")
 		return nil
 	}
 
 	if dist == "" {
-		distStr = "./dist"
+		dist = "./dist"
 	}
 
 	clearTargetFolder := exec.Command("rm", "-rf", path)
-	if err := RunCmd(clearTargetFolder, "clear/move", logger); err != nil {
+	clearTargetFolder.Dir = dir
+	if err := RunCmd(clearTargetFolder, sink, "deploy", deployment); err != nil {
 		return err
 	}
 
-	move := exec.Command("mv", distStr, path)
-	if err := RunCmd(move, "run", logger); err != nil {
+	move := exec.Command("mv", dist, path)
+	move.Dir = dir
+	if err := RunCmd(move, sink, "deploy", deployment); err != nil {
 		return err
-	} else {
-		logger.Info("successfully deployed")
 	}
 
+	sink.Log("info", "deploy", deployment, "successfully deployed")
 	return nil
 }

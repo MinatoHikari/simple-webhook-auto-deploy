@@ -4,355 +4,143 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
 	"strings"
-	"time"
 
-	"github.com/kataras/golog"
 	"github.com/kataras/iris/v12"
-	"github.com/kataras/iris/v12/httptest"
 )
 
-var Token *string
-var Queue chan int
-var Processes []int
-var LogChannel chan string // 用于实时日志推送的 channel
-
 func main() {
-	notFound := InitConfig()
-	if notFound {
-		Token = flag.String("t", "", "gitlab 设置的 X-Gitlab-Token")
-		flag.Parse()
-	} else {
-		Token = GetToken()
+	cfgPath := flag.String("c", "config.toml", "配置文件路径")
+	flag.Parse()
+
+	cfg, err := LoadConfig(*cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "加载配置失败:", err)
+		os.Exit(1)
 	}
 
-	Queue = make(chan int, 1)
-	LogChannel = make(chan string, 100) // 初始化日志 channel
+	mgr, err := NewProjectManager(cfg, *cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "初始化失败:", err)
+		os.Exit(1)
+	}
+
+	auth := NewAuth(cfg.Password)
 
 	app := iris.New()
-	app.Post("/webhook", Webhook)
-	app.Get("/log", LogPage)
-	app.Get("/log/stream", LogStream)
+	// iris 自身日志同时打到控制台与系统日志
+	app.Logger().SetOutput(io.MultiWriter(os.Stdout, SystemLogWriter{sink: mgr.System()}))
 
-	InitLog(app)
+	// webhook:按项目名路由 + 兼容旧的单项目裸路径
+	app.Post("/webhook/{name}", func(ctx iris.Context) {
+		p := mgr.Get(ctx.Params().Get("name"))
+		if p == nil {
+			ctx.StatusCode(http.StatusNotFound)
+			_, _ = ctx.WriteString("unknown project")
+			return
+		}
+		handleWebhook(ctx, mgr, p)
+	})
+	app.Post("/webhook", func(ctx iris.Context) {
+		list := mgr.List()
+		if len(list) != 1 {
+			ctx.StatusCode(http.StatusBadRequest)
+			_, _ = ctx.WriteString("multiple projects, please use /webhook/{name}")
+			return
+		}
+		handleWebhook(ctx, mgr, list[0])
+	})
 
-	err := app.Listen(GetPort())
-	if err != nil {
-		fmt.Println("service start failed:", err)
+	RegisterApi(app, mgr, auth)
+
+	// 提前构建路由器,使 app 可直接作为 http.Handler 使用
+	if err := app.Build(); err != nil {
+		fmt.Fprintln(os.Stderr, "构建路由失败:", err)
+		os.Exit(1)
+	}
+
+	// 根处理器:/api 与 /webhook 交给 iris,其余全部服务前端 SPA
+	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api") || strings.HasPrefix(r.URL.Path, "/webhook") {
+			app.ServeHTTP(w, r)
+			return
+		}
+		serveSPA(w, r)
+	})
+
+	fmt.Printf("webhook-service 已启动: http://localhost:%s(项目数: %d)\n", cfg.Port, len(mgr.List()))
+	if !auth.Enabled() {
+		fmt.Println("警告: 未配置管理密码(password),Web 界面无需登录")
+	}
+	if err := http.ListenAndServe(":"+cfg.Port, root); err != nil {
+		fmt.Fprintln(os.Stderr, "服务启动失败:", err)
+		os.Exit(1)
 	}
 }
 
-// Hook gitlab webhook.
-type Hook struct {
-	GitlabToken     string `header:"X-Gitlab-Token"`
-	GithubSignature string `header:"X-Hub-Signature-256"`
-}
-
-type RequestBody struct {
-	Ref    string `json:"ref"`
-	Branch string `json:"branch"`
-}
-
-// Webhook 接收 gitlab 的 webhook 请求.
-func Webhook(ctx iris.Context) {
+// handleWebhook 校验 webhook 请求并触发对应项目的部署。
+func handleWebhook(ctx iris.Context, mgr *ProjectManager, p *Project) {
 	var hook Hook
-
-	var reqBodyMap RequestBody
-
-	logger := ctx.Application().Logger()
-
-	err := ctx.ReadHeaders(&hook)
-	if err != nil {
-		_, _ = ctx.Writef("read headers failed:", err, "\n")
-		logger.Error(err)
-
+	if err := ctx.ReadHeaders(&hook); err != nil {
+		ctx.StatusCode(http.StatusBadRequest)
+		_, _ = ctx.WriteString("read headers failed")
 		return
 	}
 
 	reqBody, err := ctx.GetBody()
 	if err != nil {
-		logger.Error(err)
-
+		ctx.StatusCode(http.StatusBadRequest)
+		_, _ = ctx.WriteString("read body failed")
 		return
 	}
 
-	err = json.Unmarshal(reqBody, &reqBodyMap)
-	if err != nil {
-		logger.Error(err)
-
-		return
+	token := p.Cfg.Token
+	if token == "" {
+		token = mgr.GlobalToken()
 	}
-
-	env := GetEnv()
-
-	if Verify(hook, *Token, reqBody) {
-		_, _ = ctx.Writef("Auth success, a new script has been pushed into task list.")
-
-		logger.Info("auth success")
-		logger.Info("new process pending...")
-
-		if env.Branch != "" {
-			res := CheckBranch(env.Branch, reqBodyMap, logger)
-			if !res {
-				return
-			}
-		}
-
-		select {
-		case Queue <- 1:
-			logger.Info("enter into process")
-
-			go RunDeployProcess(logger, env)
-		default:
-			Processes = append(Processes, 1)
-		}
-	} else {
-		ctx.StatusCode(httptest.StatusUnauthorized)
+	if !Verify(hook, token, reqBody) {
+		p.Sink.Log("warn", "webhook", "", "webhook 认证失败,已拒绝")
+		ctx.StatusCode(http.StatusUnauthorized)
 		_, _ = ctx.WriteString("Unauthorized")
-		logger.Error("Unauthorized")
-
 		return
 	}
+
+	var body RequestBody
+	_ = json.Unmarshal(reqBody, &body) // 自定义触发可能没有 JSON 体,忽略解析错误
+	branch, ok := BranchMatches(p.Cfg.Branch, body)
+	if !ok {
+		p.Sink.Log("info", "webhook", "", "分支不匹配,跳过部署(期望 "+p.Cfg.Branch+", 实际 "+branch+")")
+		_, _ = ctx.WriteString("branch mismatch, deploy skipped")
+		return
+	}
+
+	res := p.EnqueueDeploy("webhook")
+	p.Sink.Log("info", "webhook", "", "webhook 触发部署(分支: "+branch+")")
+	_, _ = ctx.WriteString("accepted: " + res)
 }
 
-// RunDeployProcess 运行部署进程，进程队列.
-func RunDeployProcess(logger *golog.Logger, env *ConfigEnv) {
-	defer func() {
-		if err := recover(); err != nil {
-			fmt.Println("recover error:", err)
-		}
-	}()
-
-	logger.Info("clean untracked files...")
-
-	if err := GitClean(logger); err != nil {
-		logger.Error("git clean failed:", err)
-
-		<-Queue
-
-		Checkqueue(logger, env)
-
-		return
-	}
-
-	logger.Info("start pull...")
-
-	if err := GitPull(logger); err != nil {
-		logger.Error("git pull failed:", err)
-
-		<-Queue
-
-		Checkqueue(logger, env)
-
-		return
-	}
-
-	logger.Info("start build...")
-
-	if env.AdditionalScript != "" {
-		if err := RunAdditionScript(logger, env); err != nil {
-			logger.Error("run additional script failed:", err)
-
-			<-Queue
-
-			Checkqueue(logger, env)
-
-			return
-		}
-	}
-
-	if err := RunBuild(logger, env.Script, env.PackageManager); err != nil {
-		logger.Error("build failed:", err)
-
-		<-Queue
-
-		Checkqueue(logger, env)
-
-		return
-	}
-
-	logger.Info("start deploy...")
-
-	if err := ClearTargetFolderThenMove(logger, env.Path, env.Dist); err != nil && env.Path != "" && env.Dist != "" {
-		logger.Error("clear failed:", err)
-
-		<-Queue
-
-		Checkqueue(logger, env)
-
-		return
-	}
-
-	logger.Info("process end")
-
-	<-Queue
-
-	Checkqueue(logger, env)
+// SystemLogWriter 把 iris/golog 的文本日志按行转入系统 LogSink。
+type SystemLogWriter struct {
+	sink *LogSink
 }
 
-// Checkqueue check if there are other processes exist
-func Checkqueue(logger *golog.Logger, env *ConfigEnv) {
-	if len(Processes) != 0 {
-		Queue <- 1
-
-		logger.Info("start another deploy process...")
-
-		go RunDeployProcess(logger, env)
-
-		Processes = Processes[1:]
-	}
-}
-
-// LogStream 提供 SSE 流来推送实时日志
-func LogStream(ctx iris.Context) {
-	ctx.ContentType("text/event-stream")
-	ctx.Header("Cache-Control", "no-cache")
-	ctx.Header("Connection", "keep-alive")
-
-	// 发送初始连接消息
-	ctx.WriteString("data: " + `{"message":"日志流已连接","level":"info"}` + "\n\n")
-	ctx.ResponseWriter().Flush()
-
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-	
-	// 缓冲区用于合并多行日志
-	var messageBuffer []string
-	var bufferTimestamp string
-	var bufferLevel string
-	var isNewLogEntry bool
-	var lastLineWasEmpty bool // 跟踪上一行是否为空行
-
-	for {
-		select {
-		case logMsg := <-LogChannel:
-			// 检查是否为空行（只包含空白字符）
-			trimmed := strings.TrimSpace(logMsg)
-			
-			// 过滤掉常见的文件关闭错误消息，避免显示在网页上
-			if strings.Contains(trimmed, "file already closed") ||
-			   strings.Contains(trimmed, "read |0: file already closed") ||
-			   strings.Contains(trimmed, "broken pipe") {
-				continue
-			}
-			
-			isEmpty := trimmed == ""
-			
-			// 如果连续两行都为空行，表示新的日志条目开始
-			if isEmpty && lastLineWasEmpty {
-				// 先发送缓冲区中的内容（如果有）
-				if len(messageBuffer) > 0 {
-					mergedMsg := strings.Join(messageBuffer, " ")
-					mergedMsg = strings.Join(strings.Fields(mergedMsg), " ")
-					
-					if strings.TrimSpace(mergedMsg) != "" {
-						timestamp := bufferTimestamp
-						if timestamp == "" {
-							timestamp = time.Now().Format("15:04:05")
-						}
-						level := bufferLevel
-						if level == "" {
-							level = "info"
-						}
-						
-						data := fmt.Sprintf(`{"message":%q,"level":%q,"timestamp":%q}`, mergedMsg, level, timestamp)
-						ctx.WriteString("data: " + data + "\n\n")
-						ctx.ResponseWriter().Flush()
-					}
-					
-					// 清空缓冲区
-					messageBuffer = nil
-					bufferTimestamp = ""
-					bufferLevel = ""
-				}
-				
-				// 开始新的日志条目
-				isNewLogEntry = true
-				lastLineWasEmpty = false
-				continue
-			}
-			
-			// 更新空行状态
-			lastLineWasEmpty = isEmpty
-			
-			// 如果是空行，跳过
-			if isEmpty {
-				continue
-			}
-			
-			// 如果是新的日志条目开始（第一次遇到非空行）
-			if isNewLogEntry {
-				// 从当前行提取等级和时间
-				if level := extractLevelFromMessage(trimmed); level != "" {
-					bufferLevel = level
-					// 移除等级标记
-					trimmed = removeLevelFromMessage(trimmed)
-				} else {
-					// 如果没有找到等级标记，默认为 info
-					bufferLevel = "info"
-				}
-				
-				if timePart := extractTimeFromMessage(trimmed); timePart != "" {
-					bufferTimestamp = timePart
-				}
-				
-				// 添加到缓冲区
-				if strings.TrimSpace(trimmed) != "" {
-					messageBuffer = append(messageBuffer, trimmed)
-				}
-				isNewLogEntry = false
-				continue
-			}
-			
-			// 继续添加到缓冲区
-			// 尝试从当前行提取等级（可能在某些行中）
-			if level := extractLevelFromMessage(trimmed); level != "" {
-				bufferLevel = level
-				// 移除等级标记
-				trimmed = removeLevelFromMessage(trimmed)
-			}
-			// 尝试从当前行提取时间
-			if timePart := extractTimeFromMessage(trimmed); timePart != "" {
-				bufferTimestamp = timePart
-			}
-			
-			if strings.TrimSpace(trimmed) != "" {
-				messageBuffer = append(messageBuffer, trimmed)
-			}
-		case <-ticker.C:
-			// 如果缓冲区有内容，尝试发送（避免内容滞留）
-			if len(messageBuffer) > 0 {
-				mergedMsg := strings.Join(messageBuffer, " ")
-				mergedMsg = strings.Join(strings.Fields(mergedMsg), " ")
-				
-				if strings.TrimSpace(mergedMsg) != "" {
-					timestamp := bufferTimestamp
-					if timestamp == "" {
-						timestamp = time.Now().Format("15:04:05")
-					}
-					level := bufferLevel
-					if level == "" {
-						level = "info"
-					}
-					
-					data := fmt.Sprintf(`{"message":%q,"level":%q,"timestamp":%q}`, mergedMsg, level, timestamp)
-					ctx.WriteString("data: " + data + "\n\n")
-					ctx.ResponseWriter().Flush()
-					
-					// 清空缓冲区
-					messageBuffer = nil
-					bufferTimestamp = ""
-					bufferLevel = ""
-					isNewLogEntry = false
-				}
-			} else {
-				// 发送心跳保持连接
-				ctx.WriteString(": heartbeat\n\n")
-				ctx.ResponseWriter().Flush()
-			}
-		case <-ctx.Request().Context().Done():
-			// 客户端断开连接
-			return
+func (w SystemLogWriter) Write(p []byte) (int, error) {
+	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
 		}
+		level := "info"
+		l := strings.ToLower(line)
+		if strings.Contains(l, "[erro") {
+			level = "error"
+		} else if strings.Contains(l, "[warn") {
+			level = "warn"
+		}
+		w.sink.Log(level, "server", "", line)
 	}
+	return len(p), nil
 }
