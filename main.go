@@ -71,11 +71,12 @@ func main() {
 		serveSPA(w, r)
 	})
 
-	fmt.Printf("webhook-service 已启动: http://localhost:%s(项目数: %d)\n", cfg.Port, len(mgr.List()))
+	fmt.Printf("webhook-service 已启动: http://%s(监听 %s,项目数: %d)\n",
+		cfg.ListenDisplayAddr(), cfg.ListenAddr(), len(mgr.List()))
 	if !auth.Enabled() {
 		fmt.Println("警告: 未配置管理密码(password),Web 界面无需登录")
 	}
-	if err := http.ListenAndServe(":"+cfg.Port, root); err != nil {
+	if err := http.ListenAndServe(cfg.ListenAddr(), root); err != nil {
 		fmt.Fprintln(os.Stderr, "服务启动失败:", err)
 		os.Exit(1)
 	}

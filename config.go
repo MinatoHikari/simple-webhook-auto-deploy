@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"strings"
@@ -26,6 +27,7 @@ type ProjectConfig struct {
 // AppConfig 应用全局配置。
 type AppConfig struct {
 	Port     string          `json:"port" mapstructure:"port"`
+	Host     string          `json:"host" mapstructure:"host"`
 	Password string          `json:"-" mapstructure:"password"`
 	Token    string          `json:"-" mapstructure:"token"`
 	LogDir   string          `json:"logDir" mapstructure:"log-dir"`
@@ -72,6 +74,10 @@ func LoadConfig(path string) (*AppConfig, error) {
 		cfg.Port = "8079"
 	}
 	cfg.Port = strings.TrimPrefix(cfg.Port, ":")
+	cfg.Host = strings.TrimSpace(cfg.Host)
+	if err := cfg.validateHost(); err != nil {
+		return nil, err
+	}
 	if cfg.LogDir == "" {
 		cfg.LogDir = "logs"
 	}
@@ -87,6 +93,46 @@ func LoadConfig(path string) (*AppConfig, error) {
 		seen[cfg.Projects[i].Name] = true
 	}
 	return cfg, nil
+}
+
+// validateHost 校验监听地址配置:
+// 合法取值为空(全部地址)、"*"/"all"、具体 IP(v4/v6)以及本机回环地址(localhost/127.x/::1 等)。
+func (c *AppConfig) validateHost() error {
+	h := strings.ToLower(c.Host)
+	if h == "" || h == "*" || h == "all" {
+		return nil
+	}
+	if h == "localhost" {
+		return nil
+	}
+	if ip := net.ParseIP(c.Host); ip != nil {
+		return nil
+	}
+	return fmt.Errorf("host 配置无效: %q(应为空/本地回环地址/具体 IP,示例:0.0.0.0、127.0.0.1、192.168.1.10、::1)", c.Host)
+}
+
+// ListenAddr 拼出监听地址:
+//   - host 为空 / "*" / "all" / "0.0.0.0" → ":port",监听全部地址(IPv4+IPv6)
+//   - host 为 "localhost" → 127.0.0.1:port
+//   - 其他 → 指定 IP:port(IPv6 自动加方括号)
+func (c *AppConfig) ListenAddr() string {
+	h := strings.TrimSpace(c.Host)
+	switch strings.ToLower(h) {
+	case "", "*", "all", "0.0.0.0":
+		return ":" + c.Port
+	case "localhost":
+		h = "127.0.0.1"
+	}
+	return net.JoinHostPort(h, c.Port)
+}
+
+// ListenDisplayAddr 启动提示用的可访问地址。
+func (c *AppConfig) ListenDisplayAddr() string {
+	addr := c.ListenAddr()
+	if strings.HasPrefix(addr, ":") {
+		return "localhost" + addr
+	}
+	return addr
 }
 
 // SaveConfig 将配置整体写回 TOML 文件(先写临时文件再原子替换)。
@@ -108,6 +154,8 @@ func RenderTOML(cfg *AppConfig) string {
 	b.WriteString("# webhook-service 配置文件(由管理界面维护,手动编辑后需重启服务)\n\n")
 	b.WriteString("# Web 界面与 API 监听端口\n")
 	fmt.Fprintf(&b, "port = %s\n", tomlQuote(cfg.Port))
+	b.WriteString("# 监听地址:留空或 0.0.0.0 = 全部地址;localhost / 127.0.0.1 = 仅本机;也可填具体 IP 如 192.168.1.10\n")
+	fmt.Fprintf(&b, "host = %s\n", tomlQuote(cfg.Host))
 	b.WriteString("# Web 界面登录密码,留空则免登录\n")
 	fmt.Fprintf(&b, "password = %s\n", tomlQuote(cfg.Password))
 	b.WriteString("# 全局 webhook token,项目未单独配置 token 时使用\n")

@@ -3,6 +3,8 @@
 
 # Web 界面与 API 监听端口
 port = "8079"
+# 监听地址:留空或 0.0.0.0 = 全部地址;localhost / 127.0.0.1 = 仅本机;也可填具体 IP 如 192.168.1.10
+host = ""
 # Web 界面登录密码,留空则免登录(webhook 始终走 token 认证)
 password = ""
 # 全局 webhook token,项目未单独配置 token 时使用

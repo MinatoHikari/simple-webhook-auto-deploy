@@ -93,7 +93,7 @@ Loop:
 			continue
 		}
 		if isError {
-			sink.Log("error", stage, deployment, m)
+			sink.Log(stderrLevel(m), stage, deployment, m)
 		} else {
 			sink.Log("info", stage, deployment, m)
 		}
@@ -122,6 +122,28 @@ Loop:
 	}
 
 	return released
+}
+
+// stderrLevel 细分 stderr 内容的日志级别:
+// stderr 不全是错误——包管理器执行脚本时会把命令回显打到 stderr
+// (npm/pnpm 是 "> cmd" 前缀,yarn/bun 是 "$ cmd" 前缀),
+// 各类 deprecation/网络警告也走 stderr,全部标红会掩盖真正的错误。
+func stderrLevel(line string) string {
+	t := strings.TrimSpace(line)
+	// 包管理器的脚本横幅,如 "> pkg@1.0.0 build" / "> cross-env ..." / "$ cross-env ..."
+	if strings.HasPrefix(t, ">") || strings.HasPrefix(t, "$") {
+		return "info"
+	}
+	lt := strings.ToLower(t)
+	// 明确的错误标识保持 error(vue-tsc/vite 的报错都含 error 关键字)
+	if strings.Contains(lt, "error") || strings.Contains(lt, "failed") || strings.Contains(lt, "fatal") {
+		return "error"
+	}
+	// npm warn / pnpm warn / ⚠ WARNING / deprecated 等降为 warn
+	if strings.Contains(lt, "warn") || strings.Contains(lt, "deprecated") || strings.HasPrefix(t, "⚠") {
+		return "warn"
+	}
+	return "error"
 }
 
 // GitClean 清理工作区:git clean -f + git reset --hard。
