@@ -3,8 +3,11 @@ package main
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -251,9 +254,10 @@ func RunAdditionScript(dir, script string, args []string, sink *LogSink, deploym
 	return nil
 }
 
-// ClearTargetFolderThenMove 删除目标目录,把构建产物移动过去。
+// ClearTargetFolderThenCopy 清空目标目录内容(保留目录本身),把构建产物复制进去。
+// 目录 inode 保持不变,避免 Syncthing 等目录监听工具因目录重建而丢失跟踪。
 // output 为空时跳过(只构建不发布)。
-func ClearTargetFolderThenMove(dir, path, dist string, sink *LogSink, deployment string) error {
+func ClearTargetFolderThenCopy(dir, path, dist string, sink *LogSink, deployment string) error {
 	if path == "" {
 		sink.Log("info", "deploy", deployment, "未配置 output,跳过产物发布")
 		return nil
@@ -263,18 +267,102 @@ func ClearTargetFolderThenMove(dir, path, dist string, sink *LogSink, deployment
 		dist = "./dist"
 	}
 
-	clearTargetFolder := exec.Command("rm", "-rf", path)
-	clearTargetFolder.Dir = dir
-	if err := RunCmd(clearTargetFolder, sink, "deploy", deployment); err != nil {
+	// 先确认产物存在再清空输出目录:产物缺失时输出目录保持原样
+	distPath := filepath.Join(dir, dist)
+	fi, err := os.Stat(distPath)
+	if err != nil || !fi.IsDir() {
+		return fmt.Errorf("构建产物目录不存在: %s", distPath)
+	}
+
+	// 目录不存在则创建,已存在则原样保留(不动 inode)
+	if err := os.MkdirAll(path, 0755); err != nil {
+		return fmt.Errorf("创建输出目录失败: %w", err)
+	}
+
+	sink.Log("info", "deploy", deployment, "清空输出目录内容(保留目录本身)...")
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return fmt.Errorf("读取输出目录失败: %w", err)
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(path, e.Name())); err != nil {
+			return fmt.Errorf("清理 %s 失败: %w", e.Name(), err)
+		}
+	}
+
+	n, err := copyDirContents(distPath, path, sink, deployment)
+	if err != nil {
 		return err
 	}
 
-	move := exec.Command("mv", dist, path)
-	move.Dir = dir
-	if err := RunCmd(move, sink, "deploy", deployment); err != nil {
-		return err
+	// 复制完成后删除产物目录,保证下次发布的产物必然来自新的构建
+	// (与旧的 mv 行为等价:产物被"消费"掉,避免残留的陈旧 dist 被重复发布)
+	if err := os.RemoveAll(distPath); err != nil {
+		return fmt.Errorf("清理已发布的产物目录失败: %w", err)
 	}
 
-	sink.Log("info", "deploy", deployment, "successfully deployed")
+	sink.Log("info", "deploy", deployment, fmt.Sprintf("successfully deployed,已复制 %d 个文件到 %s", n, path))
 	return nil
+}
+
+// copyDirContents 递归复制 src 目录的内容到 dst,返回复制的文件数。
+func copyDirContents(src, dst string, sink *LogSink, deployment string) (int, error) {
+	n := 0
+
+	var walk func(s, d string) error
+	walk = func(s, d string) error {
+		entries, err := os.ReadDir(s)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			sPath, dPath := filepath.Join(s, e.Name()), filepath.Join(d, e.Name())
+			if e.IsDir() {
+				if err := os.MkdirAll(dPath, 0755); err != nil {
+					return err
+				}
+				if err := walk(sPath, dPath); err != nil {
+					return err
+				}
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() {
+				sink.Log("warn", "deploy", deployment, "跳过非常规文件: "+sPath)
+				continue
+			}
+			if err := copyFile(sPath, dPath, info.Mode()); err != nil {
+				return err
+			}
+			n++
+		}
+		return nil
+	}
+
+	if err := walk(src, dst); err != nil {
+		return 0, fmt.Errorf("复制产物失败: %w", err)
+	}
+	return n, nil
+}
+
+// copyFile 复制单个文件并保留权限位。
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }

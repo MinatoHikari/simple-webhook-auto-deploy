@@ -36,7 +36,7 @@ func (p *Project) execute(depID string) error {
 	}
 
 	p.Sink.Log("info", "deploy", depID, "发布产物...")
-	if err := ClearTargetFolderThenMove(cfg.Path, cfg.Output, cfg.Dist, p.Sink, depID); err != nil {
+	if err := ClearTargetFolderThenCopy(cfg.Path, cfg.Output, cfg.Dist, p.Sink, depID); err != nil {
 		return fmt.Errorf("发布失败: %w", err)
 	}
 
