@@ -50,7 +50,22 @@
         <button class="btn" type="submit" :disabled="!newBranch || detail.status.status === 'deploying'">切换</button>
       </form>
 
-      <h3 class="section-title">部署历史</h3>
+      <div class="section-head">
+        <span>部署历史</span>
+        <button class="btn btn-ghost btn-sm" @click="showPurge = !showPurge">
+          {{ showPurge ? '收起清理' : '清理日志' }}
+        </button>
+      </div>
+
+      <div v-if="showPurge" class="purge-panel">
+        <span class="muted small">按日期硬删除:</span>
+        <input v-model="purgeSince" type="datetime-local" />
+        <span class="muted small">至</span>
+        <input v-model="purgeUntil" type="datetime-local" />
+        <button class="btn btn-sm" :disabled="!purgeSince && !purgeUntil" @click="purgeRange">删除范围内日志</button>
+        <button class="btn btn-danger btn-sm" style="margin-left: auto;" @click="purgeAll">删除全部日志</button>
+      </div>
+
       <table v-if="detail.status.history.length">
         <thead>
           <tr><th>部署会话</th><th>开始时间</th><th>触发</th><th>分支</th><th>耗时</th><th>结果</th><th></th></tr>
@@ -67,7 +82,20 @@
                 {{ rec.result === 'success' ? '成功' : '失败' }}
               </span>
             </td>
-            <td><a href="javascript:void(0)" @click="viewSession(rec)">查看日志</a></td>
+            <td class="row-actions">
+              <a
+                v-if="hasLogs(rec)"
+                href="javascript:void(0)"
+                @click="viewSession(rec)"
+              >查看日志</a>
+              <span v-else class="link-disabled" title="该会话的日志已被清理">查看日志</span>
+              <a
+                v-if="hasLogs(rec)"
+                href="javascript:void(0)"
+                class="del-link"
+                @click="deleteSessionLogs(rec)"
+              >删日志</a>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -109,6 +137,9 @@ const tab = ref('overview')
 const newBranch = ref('')
 const selectedDeployment = ref('')
 const logsKey = ref(0)
+const showPurge = ref(false)
+const purgeSince = ref('')
+const purgeUntil = ref('')
 let timer = null
 
 async function refresh() {
@@ -142,6 +173,55 @@ function viewSession(rec) {
   selectedDeployment.value = rec.id
   logsKey.value++ // 强制重建日志面板并应用会话筛选
   tab.value = 'logs'
+}
+
+// 该部署会话的日志条目是否仍然存在(删除后置灰"查看日志")
+function hasLogs(rec) {
+  return !!detail.value?.status?.logSessions?.[rec.id]
+}
+
+// 单条硬删除:删除某次部署会话的全部日志条目(历史记录保留)
+async function deleteSessionLogs(rec) {
+  if (!window.confirm(`永久删除部署 ${rec.id}(${fmtDateTime(rec.start)})的全部日志条目吗?\n部署历史记录会保留。`)) return
+  try {
+    const res = await api.purgeProjectLogs(props.name, { deployment: rec.id })
+    toast(`已删除 ${res.deleted} 条日志`, 'success')
+    refresh()
+  } catch (e) {
+    toast(e.message, 'error')
+  }
+}
+
+function toISO(v) {
+  return v ? new Date(v).toISOString() : ''
+}
+
+// 按日期范围硬删除
+async function purgeRange() {
+  const desc = `自 ${purgeSince.value || '最早'} 至 ${purgeUntil.value || '现在'}`
+  if (!window.confirm(`永久删除${desc}的全部日志条目吗?\n部署历史记录会保留。`)) return
+  try {
+    const res = await api.purgeProjectLogs(props.name, {
+      since: toISO(purgeSince.value),
+      until: toISO(purgeUntil.value)
+    })
+    toast(`已删除 ${res.deleted} 条日志`, 'success')
+    refresh()
+  } catch (e) {
+    toast(e.message, 'error')
+  }
+}
+
+// 全部硬删除
+async function purgeAll() {
+  if (!window.confirm(`永久删除项目 ${props.name} 的【全部】日志条目吗?\n部署历史记录会保留,此操作不可恢复。`)) return
+  try {
+    const res = await api.purgeProjectLogs(props.name, {})
+    toast(`已删除 ${res.deleted} 条日志`, 'success')
+    refresh()
+  } catch (e) {
+    toast(e.message, 'error')
+  }
 }
 
 async function save(cfg) {

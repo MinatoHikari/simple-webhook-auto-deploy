@@ -77,20 +77,20 @@ func NewProject(cfg ProjectConfig, logDir string, globalHub *LogHub) (*Project, 
 
 // ProjectStatus 返回给前端的项目状态视图。
 type ProjectStatus struct {
-	Name              string         `json:"name"`
-	Path              string         `json:"path"`
-	Branch            string         `json:"branch"`
-	Status            string         `json:"status"`
-	CurrentDeployment string         `json:"currentDeployment,omitempty"`
-	LastDeploy        time.Time      `json:"lastDeploy"`
-	LastResult        string         `json:"lastResult"`
-	History           []DeployRecord `json:"history"`
+	Name              string           `json:"name"`
+	Path              string           `json:"path"`
+	Branch            string           `json:"branch"`
+	Status            string           `json:"status"`
+	CurrentDeployment string           `json:"currentDeployment,omitempty"`
+	LastDeploy        time.Time        `json:"lastDeploy"`
+	LastResult        string           `json:"lastResult"`
+	History           []DeployRecord   `json:"history"`
+	LogSessions       map[string]bool  `json:"logSessions"`
 }
 
 // Snapshot 生成状态视图(历史记录取最近 20 条)。
 func (p *Project) Snapshot() ProjectStatus {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	n := len(p.history)
 	if n > 20 {
 		n = 20
@@ -100,7 +100,7 @@ func (p *Project) Snapshot() ProjectStatus {
 	if history == nil {
 		history = []DeployRecord{}
 	}
-	return ProjectStatus{
+	st := ProjectStatus{
 		Name:              p.Cfg.Name,
 		Path:              p.Cfg.Path,
 		Branch:            p.Cfg.Branch,
@@ -110,6 +110,16 @@ func (p *Project) Snapshot() ProjectStatus {
 		LastResult:        p.lastResult,
 		History:           history,
 	}
+	p.mu.Unlock()
+
+	// 仍拥有日志条目的部署会话(前端据此置灰"查看日志")
+	if p.Sink != nil {
+		st.LogSessions = p.Sink.DeploymentIDs()
+	}
+	if st.LogSessions == nil {
+		st.LogSessions = map[string]bool{}
+	}
+	return st
 }
 
 // Status 返回当前状态。

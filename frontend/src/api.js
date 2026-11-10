@@ -42,5 +42,6 @@ export const api = {
   switchBranch: (name, branch) => request('POST', `/api/projects/${enc(name)}/branch`, { branch }),
 
   projectLogs: (name, params) => request('GET', `/api/projects/${enc(name)}/logs${qs(params)}`),
+  purgeProjectLogs: (name, params) => request('DELETE', `/api/projects/${enc(name)}/logs${qs(params)}`),
   systemLogs: params => request('GET', `/api/logs${qs(params)}`)
 }

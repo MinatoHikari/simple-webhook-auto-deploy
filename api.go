@@ -110,6 +110,7 @@ func RegisterApi(app *iris.Application, mgr *ProjectManager, auth *Auth) {
 	p.Post("/projects/{name}/deploy", api.deployProject)
 	p.Post("/projects/{name}/branch", api.switchBranch)
 	p.Get("/projects/{name}/logs", api.projectLogs)
+	p.Delete("/projects/{name}/logs", api.deleteProjectLogs)
 	p.Get("/projects/{name}/logs/stream", api.projectLogStream)
 	p.Get("/logs", api.systemLogs)
 	p.Get("/logs/stream", api.globalLogStream)
@@ -333,6 +334,73 @@ func (api *Api) projectLogs(ctx iris.Context) {
 		entries = []LogEntry{}
 	}
 	_, _ = ctx.JSON(map[string]interface{}{"entries": entries})
+}
+
+// deleteProjectLogs 硬删除项目日志(仅日志条目,部署历史记录保留):
+//   - ?deployment=<id> 删除该部署会话的全部条目
+//   - ?since=&until=(RFC3339,可只填一端)删除时间范围内的条目
+//   - 无参数删除全部
+func (api *Api) deleteProjectLogs(ctx iris.Context) {
+	name := ctx.Params().Get("name")
+	p := api.mgr.Get(name)
+	if p == nil {
+		jsonError(ctx, http.StatusNotFound, "项目不存在")
+		return
+	}
+
+	var (
+		n       int
+		err     error
+		condStr string
+	)
+
+	if dep := ctx.URLParam("deployment"); dep != "" {
+		n, err = p.Sink.Delete(func(e *LogEntry) bool { return e.DeploymentID == dep })
+		condStr = "会话 " + dep
+	} else {
+		var since, until time.Time
+		for _, pv := range []struct {
+			key    string
+			target *time.Time
+		}{{"since", &since}, {"until", &until}} {
+			if v := ctx.URLParam(pv.key); v != "" {
+				t, perr := time.Parse(time.RFC3339, v)
+				if perr != nil {
+					jsonError(ctx, http.StatusBadRequest, pv.key+" 格式应为 RFC3339")
+					return
+				}
+				*pv.target = t
+			}
+		}
+		if since.IsZero() && until.IsZero() {
+			n, err = p.Sink.DeleteAll()
+			condStr = "全部"
+		} else {
+			n, err = p.Sink.Delete(func(e *LogEntry) bool {
+				if !since.IsZero() && e.Time.Before(since) {
+					return false
+				}
+				if !until.IsZero() && e.Time.After(until) {
+					return false
+				}
+				return true
+			})
+			condStr = "时间范围"
+			if !since.IsZero() {
+				condStr += " 自 " + since.Local().Format("2006-01-02 15:04")
+			}
+			if !until.IsZero() {
+				condStr += " 至 " + until.Local().Format("2006-01-02 15:04")
+			}
+		}
+	}
+
+	if err != nil {
+		jsonError(ctx, http.StatusInternalServerError, "删除失败: "+err.Error())
+		return
+	}
+	api.mgr.System().Log("info", "server", "", "清理项目 "+name+" 日志 "+strconv.Itoa(n)+" 条("+condStr+")")
+	_, _ = ctx.JSON(map[string]interface{}{"deleted": n})
 }
 
 func (api *Api) systemLogs(ctx iris.Context) {
