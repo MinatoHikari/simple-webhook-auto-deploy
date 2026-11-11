@@ -48,6 +48,10 @@
       <span>webhook token (留空使用全局 token)</span>
       <input v-model="form.token" placeholder="项目独立 token" />
     </label>
+    <label class="field">
+      <span>清理忽略 (逗号分隔,发布清理时保留这些顶层条目)</span>
+      <input v-model="form.cleanIgnoreText" placeholder="如 .stfolder, .stignore, *.tmp" />
+    </label>
     <div v-if="error" class="error-text">{{ error }}</div>
     <div class="form-actions">
       <button type="button" class="btn btn-ghost" @click="$emit('cancel')">取消</button>
@@ -75,7 +79,8 @@ const form = reactive({
   dist: props.initial?.dist ?? '',
   output: props.initial?.output ?? '',
   additionalScript: props.initial?.additionalScript ?? '',
-  argsText: (props.initial?.additionalScriptArgs ?? []).join(',')
+  argsText: (props.initial?.additionalScriptArgs ?? []).join(','),
+  cleanIgnoreText: (props.initial?.cleanIgnore ?? []).join(',')
 })
 const error = ref('')
 
@@ -95,7 +100,8 @@ function submit() {
     dist: form.dist.trim(),
     output: form.output.trim(),
     additionalScript: form.additionalScript.trim(),
-    additionalScriptArgs: form.argsText.split(',').map(s => s.trim()).filter(Boolean)
+    additionalScriptArgs: form.argsText.split(',').map(s => s.trim()).filter(Boolean),
+    cleanIgnore: form.cleanIgnoreText.split(',').map(s => s.trim()).filter(Boolean)
   })
 }
 </script>

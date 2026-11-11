@@ -172,12 +172,13 @@ func (p *Project) runOnce(trigger string) {
 	p.mu.Lock()
 	p.status = StatusDeploying
 	p.currentDep = depID
-	branch := p.Cfg.Branch
+	// 部署全程使用这份配置快照,持锁读取避免与 UpdateProject 的写入竞态
+	cfgSnap := p.Cfg
 	p.mu.Unlock()
 
 	p.Sink.Log("info", "deploy", depID, "部署开始(触发来源: "+trigger+")")
 
-	err := p.execute(depID)
+	err := p.execute(cfgSnap, depID)
 
 	end := time.Now()
 	result := "success"
@@ -193,7 +194,7 @@ func (p *Project) runOnce(trigger string) {
 	rec := DeployRecord{
 		ID:       depID,
 		Trigger:  trigger,
-		Branch:   branch,
+		Branch:   cfgSnap.Branch,
 		Start:    start,
 		End:      end,
 		Duration: end.Sub(start).Milliseconds(),

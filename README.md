@@ -59,6 +59,7 @@
 | `output` | 发布目标目录,`rm -rf` 后移入产物;留空只构建不发布 | 空 |
 | `token` | 项目独立 webhook token | 空(用全局) |
 | `additional-script` / `additional-script-args` | 构建前附加脚本及参数 | 空 |
+| `clean-ignore` | 发布清理时保留的输出目录顶层条目,支持通配(如 Syncthing 的 `.stfolder`、`.stignore`) | 空(全清) |
 
 配置也可以完全在 Web 界面里维护,保存时会整体写回 `config.toml`。
 

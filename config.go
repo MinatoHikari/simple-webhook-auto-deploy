@@ -22,6 +22,7 @@ type ProjectConfig struct {
 	Token                string   `json:"token" mapstructure:"token"`
 	AdditionalScript     string   `json:"additionalScript" mapstructure:"additional-script"`
 	AdditionalScriptArgs []string `json:"additionalScriptArgs" mapstructure:"additional-script-args"`
+	CleanIgnore          []string `json:"cleanIgnore" mapstructure:"clean-ignore"`
 }
 
 // AppConfig 应用全局配置。
@@ -176,6 +177,15 @@ func RenderTOML(cfg *AppConfig) string {
 		fmt.Fprintf(&b, "additional-script = %s\n", tomlQuote(p.AdditionalScript))
 		b.WriteString("additional-script-args = [")
 		for i, a := range p.AdditionalScriptArgs {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(tomlQuote(a))
+		}
+		b.WriteString("]\n")
+		b.WriteString("# 发布清理时保留的顶层条目(支持通配),如 Syncthing 的同步标记\n")
+		b.WriteString("clean-ignore = [")
+		for i, a := range p.CleanIgnore {
 			if i > 0 {
 				b.WriteString(", ")
 			}

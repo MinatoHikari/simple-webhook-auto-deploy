@@ -9,9 +9,9 @@ import (
 
 // execute 执行一次部署流水线:
 // 清理工作区 → 拉取代码 → 附加脚本 → 构建 → 搬运产物。
+// 使用调用方(runOnce)在锁内取得的配置快照,避免与配置更新竞态。
 // 任一步骤失败立即中断,绝不继续执行清空/移动目录的部署步骤。
-func (p *Project) execute(depID string) error {
-	cfg := p.Cfg
+func (p *Project) execute(cfg ProjectConfig, depID string) error {
 
 	p.Sink.Log("info", "clean", depID, "清理工作区(git clean / reset)...")
 	if err := GitClean(cfg.Path, p.Sink, depID); err != nil {
@@ -36,7 +36,7 @@ func (p *Project) execute(depID string) error {
 	}
 
 	p.Sink.Log("info", "deploy", depID, "发布产物...")
-	if err := ClearTargetFolderThenCopy(cfg.Path, cfg.Output, cfg.Dist, p.Sink, depID); err != nil {
+	if err := ClearTargetFolderThenCopy(cfg.Path, cfg.Output, cfg.Dist, cfg.CleanIgnore, p.Sink, depID); err != nil {
 		return fmt.Errorf("发布失败: %w", err)
 	}
 

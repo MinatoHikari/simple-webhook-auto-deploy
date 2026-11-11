@@ -256,8 +256,10 @@ func RunAdditionScript(dir, script string, args []string, sink *LogSink, deploym
 
 // ClearTargetFolderThenCopy 清空目标目录内容(保留目录本身),把构建产物复制进去。
 // 目录 inode 保持不变,避免 Syncthing 等目录监听工具因目录重建而丢失跟踪。
+// ignore 为发布清理的忽略清单:命中的顶层条目清理时保留、复制时也不覆盖
+// (如 Syncthing 的 .stfolder / .stignore 同步标记)。
 // output 为空时跳过(只构建不发布)。
-func ClearTargetFolderThenCopy(dir, path, dist string, sink *LogSink, deployment string) error {
+func ClearTargetFolderThenCopy(dir, path, dist string, ignore []string, sink *LogSink, deployment string) error {
 	if path == "" {
 		sink.Log("info", "deploy", deployment, "未配置 output,跳过产物发布")
 		return nil
@@ -285,12 +287,16 @@ func ClearTargetFolderThenCopy(dir, path, dist string, sink *LogSink, deployment
 		return fmt.Errorf("读取输出目录失败: %w", err)
 	}
 	for _, e := range entries {
+		if isCleanIgnored(e.Name(), ignore) {
+			sink.Log("info", "deploy", deployment, "保留 "+e.Name()+"(clean-ignore)")
+			continue
+		}
 		if err := os.RemoveAll(filepath.Join(path, e.Name())); err != nil {
 			return fmt.Errorf("清理 %s 失败: %w", e.Name(), err)
 		}
 	}
 
-	n, err := copyDirContents(distPath, path, sink, deployment)
+	n, err := copyDirContents(distPath, path, ignore, sink, deployment)
 	if err != nil {
 		return err
 	}
@@ -305,23 +311,41 @@ func ClearTargetFolderThenCopy(dir, path, dist string, sink *LogSink, deployment
 	return nil
 }
 
+// isCleanIgnored 判断输出目录的顶层条目是否命中清理忽略清单。
+// 每项用 filepath.Match 匹配:无通配符时即精确比较,支持 ".stfolder"、"*.tmp" 等写法。
+func isCleanIgnored(name string, ignore []string) bool {
+	for _, pattern := range ignore {
+		if pattern == "" {
+			continue
+		}
+		if ok, err := filepath.Match(pattern, name); err == nil && ok {
+			return true
+		}
+	}
+	return false
+}
+
 // copyDirContents 递归复制 src 目录的内容到 dst,返回复制的文件数。
-func copyDirContents(src, dst string, sink *LogSink, deployment string) (int, error) {
+// topIgnore 仅作用于顶层条目:命中的源条目不复制(避免覆盖被保留的同步标记文件)。
+func copyDirContents(src, dst string, topIgnore []string, sink *LogSink, deployment string) (int, error) {
 	n := 0
 
-	var walk func(s, d string) error
-	walk = func(s, d string) error {
+	var walk func(s, d string, top bool) error
+	walk = func(s, d string, top bool) error {
 		entries, err := os.ReadDir(s)
 		if err != nil {
 			return err
 		}
 		for _, e := range entries {
+			if top && isCleanIgnored(e.Name(), topIgnore) {
+				continue
+			}
 			sPath, dPath := filepath.Join(s, e.Name()), filepath.Join(d, e.Name())
 			if e.IsDir() {
 				if err := os.MkdirAll(dPath, 0755); err != nil {
 					return err
 				}
-				if err := walk(sPath, dPath); err != nil {
+				if err := walk(sPath, dPath, false); err != nil {
 					return err
 				}
 				continue
@@ -342,7 +366,7 @@ func copyDirContents(src, dst string, sink *LogSink, deployment string) (int, er
 		return nil
 	}
 
-	if err := walk(src, dst); err != nil {
+	if err := walk(src, dst, true); err != nil {
 		return 0, fmt.Errorf("复制产物失败: %w", err)
 	}
 	return n, nil

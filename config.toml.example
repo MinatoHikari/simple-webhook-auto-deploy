@@ -25,6 +25,8 @@ output = "/usr/local/var/www/web"
 token = ""
 additional-script = ""
 additional-script-args = []
+# 发布清理时保留的顶层条目(支持通配),如 Syncthing 的同步标记
+clean-ignore = [".stfolder", ".stignore"]
 
 [[projects]]
 name = "admin"
@@ -37,3 +39,4 @@ output = "/usr/local/var/www/admin"
 token = ""
 additional-script = ""
 additional-script-args = []
+clean-ignore = []

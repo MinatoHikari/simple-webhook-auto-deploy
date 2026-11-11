@@ -42,6 +42,10 @@
           <span class="k">附加脚本</span>
           <span class="v">{{ detail.cfg.additionalScript }} {{ (detail.cfg.additionalScriptArgs || []).join(' ') }}</span>
         </div>
+        <div v-if="(detail.cfg.cleanIgnore || []).length" class="overview-item">
+          <span class="k">清理忽略</span>
+          <span class="v">{{ detail.cfg.cleanIgnore.join(', ') }}</span>
+        </div>
       </div>
 
       <h3 class="section-title">切换分支</h3>
